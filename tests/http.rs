@@ -8,7 +8,7 @@ use system1::init;
 const SNAPSHOT: &str = r#"[["SAD",420,45],8,[[0,false],[0.3,false]],0.45,[["inf",150,10]]]"#;
 const WAIT: Duration = Duration::from_secs(15);
 
-const OK_BODY: &str = r#"{"answers":{"decision":{"choice":"flank","probabilities":{"continue":0.2,"retreat":0.3,"flank":0.5},"confidence":0.14}},"usage":{}}"#;
+const OK_BODY: &str = r#"{"id":"x","model":"convaiinnovations/laya-multilingual","answers":{"choice":{"choice":"flank","probabilities":{"continue":0.2,"retreat":0.3,"flank":0.5},"confidence":0.14}},"usage":{"input_tokens":40,"output_tokens":0}}"#;
 
 /// Runs `decide` and returns the first callback as `(function, data)`.
 fn decide(url: &str, group_id: u32) -> (String, String) {
@@ -44,7 +44,7 @@ fn decide(url: &str, group_id: u32) -> (String, String) {
 fn ok_response_becomes_decision_callback() {
     let mut server = mockito::Server::new();
     let mock = server
-        .mock("POST", "/predict")
+        .mock("POST", "/api/alpha/decisions")
         .match_body(mockito::Matcher::PartialJson(serde_json::json!({
             "state": "TASK SAD 400m northeast. GRP 2/8 alive, 1 wnd, hp 85%. CAS 6. AMMO 45%. CONTACTS inf 150m north."
         })))
@@ -58,17 +58,17 @@ fn ok_response_becomes_decision_callback() {
 }
 
 #[test]
-fn http_422_becomes_error_callback_with_detail() {
+fn http_400_becomes_error_callback_with_detail() {
     let mut server = mockito::Server::new();
     server
-        .mock("POST", "/predict")
-        .with_status(422)
-        .with_body(r#"{"detail":"question 'decision' needs 120015 tokens, exceeding the model limit of 512"}"#)
+        .mock("POST", "/api/alpha/decisions")
+        .with_status(400)
+        .with_body(r#"{"error":{"code":400,"message":"question 'decision' needs 120015 tokens, exceeding the model limit of 4096"}}"#)
         .create();
 
     let (func, data) = decide(&server.url(), 3);
     assert_eq!(func, "error");
-    assert!(data.starts_with("[3,422,"), "{data}");
+    assert!(data.starts_with("[3,400,"), "{data}");
     assert!(data.contains("needs 120015 tokens"), "{data}");
 }
 
@@ -76,7 +76,7 @@ fn http_422_becomes_error_callback_with_detail() {
 fn http_500_becomes_error_callback() {
     let mut server = mockito::Server::new();
     server
-        .mock("POST", "/predict")
+        .mock("POST", "/api/alpha/decisions")
         .with_status(500)
         .with_body("boom")
         .create();
@@ -91,7 +91,7 @@ fn http_500_becomes_error_callback() {
 fn invalid_choice_becomes_status_zero_error() {
     let mut server = mockito::Server::new();
     server
-        .mock("POST", "/predict")
+        .mock("POST", "/api/alpha/decisions")
         .with_body(OK_BODY.replace("\"flank\",", "\"charge\","))
         .create();
 
@@ -128,7 +128,7 @@ mod live {
 
     #[test]
     #[ignore = "requires the local model service"]
-    fn oversized_context_yields_422() {
+    fn oversized_context_yields_400() {
         let contacts = vec![r#"["inf",150,10]"#; 20_000].join(",");
         let snapshot = format!(r#"[["SAD",420,45],8,[[0,false]],0.45,[{contacts}]]"#);
         let extension = init().testing();
@@ -152,6 +152,6 @@ mod live {
             panic!("no callback")
         };
         assert_eq!(func, "error");
-        assert!(data.starts_with("[1,422,"), "{data}");
+        assert!(data.starts_with("[1,400,"), "{data}");
     }
 }

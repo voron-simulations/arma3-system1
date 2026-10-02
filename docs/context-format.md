@@ -1,7 +1,7 @@
 # Context format
 
 SQF (`System1_fnc_collectContext`) sends the extension a positional array; `src/context.rs` renders it to
-the text sent as `state` in `POST /predict`.
+the text sent as `state` in `POST /api/alpha/decisions`.
 
 ```
 [[wpType, wpDist, wpDir], initialSize, [[damage, incapacitated], ...aliveUnits], ammoFraction, [[category, dist, dir], ...contacts]]
@@ -23,13 +23,10 @@ TASK SAD 400m northeast. GRP 6/8 alive, 1 wnd, hp 85%. CAS 2. AMMO 45%. CONTACTS
 
 ## Endpoint
 
-Request:
+The extension talks to a System One compatible service through the [`jev`](https://crates.io/crates/jev)
+crate, e.g. [Laya](https://github.com/DarkWanderer/laya). It posts to `{system1_endpoint}/api/alpha/decisions`
+with model `convaiinnovations/laya-multilingual` and one `choice` question whose options are
+`continue`, `retreat` and `flank`; the answer's `choice`, `probabilities` and `confidence` are returned to SQF.
 
-```json
-{"state": "<text>", "questions": {"decision": {"type": "choice", "instructions": "...", "criteria": ["continue", "retreat", "flank"]}}}
-```
-
-Response `200`: `{"answers": {"decision": {"choice": "...", "probabilities": {...}, "confidence": 0.14}}, "usage": {...}}`.
-
-Errors: `422` with `{"detail": "question 'decision' needs N tokens, exceeding the model limit of 512"}`
-for oversized contexts; FastAPI validation errors give `detail` as an array. Both are surfaced as script errors.
+Errors: `400` with `{"error": {"code": 400, "message": "..."}}` for oversized contexts (4096-token limit);
+FastAPI validation errors give `detail`. Both are surfaced as script errors.
