@@ -1,0 +1,21 @@
+# Transient files
+keys/*
+releases/*
+.hemttout/*
+*.pbo
+
+# Utility files
+*.biprivatekey
+hemtt.exe
+
+# Built libraries
+*.dll
+*.so
+.vscode/launch.json
+
+# Rust
+/target
+
+# Code scanning results
+*.sarif
+.hemttprivatekey

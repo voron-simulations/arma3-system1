@@ -1,0 +1,32 @@
+name = "System1"
+prefix = "system1"
+modname = "system1"
+mainprefix = "dw"
+
+[properties]
+author = "Kozak"
+url = "https://github.com/voron-simulations/arma3-system1"
+
+[files]
+include = ["*.so", "README.md"]
+
+key_name = "{{prefix}}_{{version}}"
+authority = "{{prefix}}_{{version}}-{{git \"id 8\"}}"
+
+releasebuild = [
+    "@zip system1_{{semver.major}}.{{semver.minor}}.{{semver.patch}}",
+]
+
+show_output = true
+
+[hemtt.launch.default]
+workshop = [
+    "450814997",  # CBA_A3's Workshop ID
+]
+parameters = [
+    "-skipIntro",
+    "-noSplash",
+    "-showScriptErrors",
+    "-debug",
+    "-filePatching",
+]
