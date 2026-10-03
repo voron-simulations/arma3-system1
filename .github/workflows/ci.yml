@@ -145,36 +145,16 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
-    env:
-      # Pinned so the wire format under test only changes deliberately.
-      LAYA_REF: 90acb722f93ce90d93d360afa45100d2b148b711
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - name: Checkout Laya
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: DarkWanderer/laya
-          ref: ${{ env.LAYA_REF }}
-          path: laya
-          persist-credentials: false
-
-      - name: Build Laya image (CPU)
-        working-directory: laya
-        # Hosted runners have no GPU: swap the CUDA torch wheel and device for CPU ones.
-        run: |
-          sed -i 's|torch==2.9.1+cu128. --index-url https://download.pytorch.org/whl/cu128|torch==2.9.1'"'"' --index-url https://download.pytorch.org/whl/cpu|' Dockerfile
-          sed -i 's|device="cuda"|device="cpu"|' app/main.py
-          grep -q 'whl/cpu' Dockerfile
-          grep -q 'device="cpu"' app/main.py
-          docker build -t laya-local-api:ci .
-
       - name: Start Laya
         run: |
-          docker run -d --name laya -p 127.0.0.1:8000:8000 laya-local-api:ci
+          # No --gpus: hosted runners have none, and the image falls back to CPU.
+          docker run -d --name laya -p 127.0.0.1:8000:8000 ghcr.io/darkwanderer/laya:latest
           # The model loads before the port opens.
           for _ in $(seq 150); do
             curl -sf http://127.0.0.1:8000/healthz && exit 0
