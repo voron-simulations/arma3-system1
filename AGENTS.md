@@ -5,5 +5,5 @@ Arma 3 addon: Rust extension (`src/`, arma-rs) + SQF (`addons/`, HEMTT). Layout 
 - Function tag is `System1` (`System1_fnc_*`); CBA settings are `system1_*`.
 - Context format and endpoint: [docs/context-format.md](docs/context-format.md). Keep SQF `collectContext` and `src/context.rs` in sync.
 - `cargo clippy` denies `unwrap`/`expect` outside tests.
-- `tests/http.rs` live tests are `#[ignore]`d; they need the model on `localhost:8000`.
+- `tests/http.rs` live tests are `#[ignore]`d; they need a Laya service on `localhost:8000` (CI runs `ghcr.io/darkwanderer/laya` on CPU in the `live-laya` job).
 - `hemtt` needs a git commit to run.

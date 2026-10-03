@@ -4,7 +4,7 @@ Proof-of-concept Arma 3 addon that lets an AI group ask a local decision model w
 (`continue`, `retreat` or `flank`) and acts on the answer with waypoints.
 
 Linux dedicated server only (`system1_x64.so`). Requires [CBA_A3](https://github.com/CBATeam/CBA_A3)
-and a model service that implements `POST {endpoint}/predict` (see [docs/context-format.md](docs/context-format.md)).
+and a System One compatible model service such as [Laya](https://github.com/DarkWanderer/laya) (`POST {endpoint}/api/alpha/decisions`, used via the `jev` crate; see [docs/context-format.md](docs/context-format.md)).
 
 ## Usage
 
@@ -22,7 +22,7 @@ and a model service that implements `POST {endpoint}/predict` (see [docs/context
    gets a `system1_maneuver` waypoint for `retreat` / `flank`.
 
 Endpoint errors (including 4xx) are shown as script errors and written to the RPT; the loop retries on
-the next tick. To provoke a 422, set `system1_maxContacts` very high in a large fight.
+the next tick. To provoke a 400, set `system1_maxContacts` very high in a large fight.
 
 ### CBA settings (server)
 
@@ -30,7 +30,7 @@ the next tick. To provoke a 422, set `system1_maxContacts` very high in a large 
 | --- | --- | --- |
 | `system1_endpoint` | `http://localhost:8000` | Base URL of the model service |
 | `system1_interval` | 30 | Seconds between decisions per group |
-| `system1_maxContacts` | 8 | Contacts listed in the context (the model has a 512-token limit) |
+| `system1_maxContacts` | 8 | Contacts listed in the context (the model rejects contexts over 4096 tokens) |
 
 ## Development
 

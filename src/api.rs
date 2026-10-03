@@ -1,15 +1,20 @@
-//! Client for the decision model endpoint (`POST {base}/predict`).
+//! Client for the decision model endpoint, a System One compatible service
+//! (`POST {base}/api/alpha/decisions`), reached through the `jev` crate.
 
-use serde::{Deserialize, Serialize};
+use jev::{ChoiceAnswer, State, TypeSafeClient, TypeSafeError};
 use std::fmt;
 use std::time::Duration;
 
 const TIMEOUT: Duration = Duration::from_secs(10);
 
+/// The only model the local Laya service accepts.
+const MODEL: &str = "convaiinnovations/laya-multilingual";
+
+const DECISIONS_PATH: &str = "/api/alpha/decisions";
+
 const INSTRUCTIONS: &str = "Choose the infantry group's next action given its state.";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Decision {
     Continue,
     Retreat,
@@ -17,8 +22,7 @@ pub enum Decision {
 }
 
 impl Decision {
-    /// Order of the `criteria` sent to the model; also the order of
-    /// [`Prediction::probabilities`].
+    /// Order of [`Prediction::probabilities`].
     pub const ALL: [Decision; 3] = [Decision::Continue, Decision::Retreat, Decision::Flank];
 
     pub const fn as_str(self) -> &'static str {
@@ -27,6 +31,19 @@ impl Decision {
             Decision::Retreat => "retreat",
             Decision::Flank => "flank",
         }
+    }
+
+    /// Shown to the model next to the option name.
+    const fn description(self) -> &'static str {
+        match self {
+            Decision::Continue => "keep the current task",
+            Decision::Retreat => "withdraw from the contacts",
+            Decision::Flank => "maneuver around the contacts",
+        }
+    }
+
+    fn parse(name: &str) -> Option<Decision> {
+        Decision::ALL.into_iter().find(|d| d.as_str() == name)
     }
 }
 
@@ -74,145 +91,105 @@ impl fmt::Display for ApiError {
 
 impl std::error::Error for ApiError {}
 
-#[derive(Serialize)]
-struct Request<'a> {
-    state: &'a str,
-    questions: Questions,
-}
-
-#[derive(Serialize)]
-struct Questions {
-    decision: ChoiceQuestion,
-}
-
-#[derive(Serialize)]
-struct ChoiceQuestion {
-    #[serde(rename = "type")]
-    kind: &'static str,
-    instructions: &'static str,
-    criteria: [&'static str; 3],
-}
-
-fn request_body(state: &str) -> Request<'_> {
-    Request {
-        state,
-        questions: Questions {
-            decision: ChoiceQuestion {
-                kind: "choice",
-                instructions: INSTRUCTIONS,
-                criteria: Decision::ALL.map(Decision::as_str),
+impl From<TypeSafeError> for ApiError {
+    fn from(e: TypeSafeError) -> Self {
+        match e {
+            TypeSafeError::Api { status, message } => ApiError::Http {
+                status,
+                detail: extract_detail(&message),
             },
-        },
+            TypeSafeError::InvalidResponse(m) => ApiError::Parse(m),
+            e @ TypeSafeError::UnexpectedAnswer { .. } => ApiError::Parse(e.to_string()),
+            // Key errors cannot occur: the client is built keyless.
+            e => ApiError::Transport(e.to_string()),
+        }
     }
 }
 
-#[derive(Deserialize)]
-struct Response {
-    answers: Answers,
-}
-
-#[derive(Deserialize)]
-struct Answers {
-    decision: Answer,
-}
-
-#[derive(Deserialize)]
-struct Answer {
-    choice: Decision,
-    probabilities: Probabilities,
-    confidence: f64,
-}
-
-#[derive(Deserialize)]
-struct Probabilities {
-    #[serde(rename = "continue")]
-    continue_: f64,
-    retreat: f64,
-    flank: f64,
-}
-
-fn parse_prediction(body: &str) -> Result<Prediction, ApiError> {
-    let r: Response = serde_json::from_str(body).map_err(|e| ApiError::Parse(e.to_string()))?;
-    let a = r.answers.decision;
+fn parse_prediction(answer: &ChoiceAnswer) -> Result<Prediction, ApiError> {
+    let decision = Decision::parse(&answer.choice)
+        .ok_or_else(|| ApiError::Parse(format!("unknown choice {:?}", answer.choice)))?;
+    let mut probabilities = [0.0; 3];
+    for (slot, d) in probabilities.iter_mut().zip(Decision::ALL) {
+        *slot = *answer
+            .probabilities
+            .get(d.as_str())
+            .ok_or_else(|| ApiError::Parse(format!("no probability for {:?}", d.as_str())))?;
+    }
     Ok(Prediction {
-        decision: a.choice,
-        probabilities: [
-            a.probabilities.continue_,
-            a.probabilities.retreat,
-            a.probabilities.flank,
-        ],
-        confidence: a.confidence,
+        decision,
+        probabilities,
+        confidence: answer.confidence,
     })
 }
 
-/// FastAPI reports validation failures as an array in `detail`, the model
-/// service reports token-limit violations as a string.
+/// jev reports the response body (compact JSON, or a JSON string for a
+/// non-JSON body) when it finds no top-level `message`. The service nests
+/// its message as `{"error": {"message": ...}}`; FastAPI validation failures
+/// use `detail`, which may be an array.
 fn extract_detail(body: &str) -> String {
     match serde_json::from_str::<serde_json::Value>(body) {
-        Ok(serde_json::Value::Object(mut o)) => match o.remove("detail") {
-            Some(serde_json::Value::String(s)) => s,
-            Some(other) => other.to_string(),
-            None => body.to_owned(),
-        },
+        Ok(serde_json::Value::String(s)) => s,
+        Ok(serde_json::Value::Object(mut o)) => {
+            if let Some(serde_json::Value::String(m)) = o
+                .get_mut("error")
+                .and_then(|e| e.as_object_mut())
+                .and_then(|e| e.remove("message"))
+            {
+                return m;
+            }
+            match o.remove("detail") {
+                Some(serde_json::Value::String(s)) => s,
+                Some(other) => other.to_string(),
+                None => body.to_owned(),
+            }
+        }
         _ => body.to_owned(),
     }
 }
 
-pub fn new_agent() -> ureq::Agent {
-    ureq::Agent::config_builder()
-        .timeout_global(Some(TIMEOUT))
-        // Otherwise ureq turns 4xx/5xx into errors and drops the body we need.
-        .http_status_as_error(false)
-        .build()
-        .into()
+/// Shared by every `decide` call so connections are pooled; the endpoint is
+/// set per call because SQF supplies it.
+pub fn new_client() -> Result<TypeSafeClient, ApiError> {
+    Ok(TypeSafeClient::local(DECISIONS_PATH, MODEL)?.with_timeout(TIMEOUT))
 }
 
-pub fn predict(agent: &ureq::Agent, base_url: &str, state: &str) -> Result<Prediction, ApiError> {
-    let url = format!("{}/predict", base_url.trim_end_matches('/'));
-    let mut response = agent
-        .post(&url)
-        .send_json(request_body(state))
-        .map_err(|e| ApiError::Transport(e.to_string()))?;
-    let status = response.status().as_u16();
-    let body = response
-        .body_mut()
-        .read_to_string()
-        .map_err(|e| ApiError::Transport(e.to_string()))?;
-    if !(200..300).contains(&status) {
-        return Err(ApiError::Http {
-            status,
-            detail: extract_detail(&body),
-        });
-    }
-    parse_prediction(&body)
+fn endpoint(base_url: &str) -> String {
+    format!("{}{DECISIONS_PATH}", base_url.trim_end_matches('/'))
+}
+
+pub fn predict(
+    client: &TypeSafeClient,
+    base_url: &str,
+    state: &str,
+) -> Result<Prediction, ApiError> {
+    let criteria = Decision::ALL.map(|d| (d.as_str(), d.description()));
+    let answer = client.clone().with_endpoint(endpoint(base_url)).choose(
+        &State::text(state),
+        INSTRUCTIONS,
+        &criteria,
+    )?;
+    parse_prediction(&answer)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use std::collections::BTreeMap;
 
-    #[test]
-    fn request_matches_schema() {
-        let v = serde_json::to_value(request_body("TASK none.")).unwrap();
-        assert_eq!(
-            v,
-            json!({
-                "state": "TASK none.",
-                "questions": {"decision": {
-                    "type": "choice",
-                    "instructions": INSTRUCTIONS,
-                    "criteria": ["continue", "retreat", "flank"],
-                }},
-            })
-        );
+    fn answer(choice: &str, probs: &[(&str, f64)]) -> ChoiceAnswer {
+        ChoiceAnswer {
+            choice: choice.to_owned(),
+            probabilities: probs.iter().map(|(k, v)| ((*k).to_owned(), *v)).collect(),
+            confidence: 0.14,
+        }
     }
 
-    const OK_BODY: &str = r#"{"answers":{"decision":{"choice":"flank","probabilities":{"continue":0.2,"retreat":0.3,"flank":0.5},"confidence":0.14}},"usage":{"tokens":40}}"#;
+    const PROBS: [(&str, f64); 3] = [("continue", 0.2), ("retreat", 0.3), ("flank", 0.5)];
 
     #[test]
-    fn parses_ok_response() {
-        let p = parse_prediction(OK_BODY).unwrap();
+    fn parses_choice_answer() {
+        let p = parse_prediction(&answer("flank", &PROBS)).unwrap();
         assert_eq!(p.decision, Decision::Flank);
         assert_eq!(p.probabilities, [0.2, 0.3, 0.5]);
         assert_eq!(p.confidence, 0.14);
@@ -220,22 +197,45 @@ mod tests {
 
     #[test]
     fn unknown_choice_is_parse_error() {
-        let body = OK_BODY.replace("flank\",", "charge\",");
-        assert!(matches!(parse_prediction(&body), Err(ApiError::Parse(_))));
+        assert!(matches!(
+            parse_prediction(&answer("charge", &PROBS)),
+            Err(ApiError::Parse(_))
+        ));
     }
 
     #[test]
-    fn malformed_body_is_parse_error() {
-        assert!(matches!(parse_prediction("{}"), Err(ApiError::Parse(_))));
+    fn missing_probability_is_parse_error() {
+        let a = ChoiceAnswer {
+            probabilities: BTreeMap::new(),
+            ..answer("flank", &[])
+        };
+        assert!(matches!(parse_prediction(&a), Err(ApiError::Parse(_))));
+    }
+
+    #[test]
+    fn endpoint_appends_path_once() {
+        assert_eq!(
+            endpoint("http://h:8000"),
+            "http://h:8000/api/alpha/decisions"
+        );
+        assert_eq!(
+            endpoint("http://h:8000/"),
+            "http://h:8000/api/alpha/decisions"
+        );
+    }
+
+    #[test]
+    fn detail_nested_error_message() {
+        let body = r#"{"error":{"code":400,"message":"question 'decision' needs 5000 tokens"}}"#;
+        assert_eq!(
+            extract_detail(body),
+            "question 'decision' needs 5000 tokens"
+        );
     }
 
     #[test]
     fn detail_string() {
-        let body = r#"{"detail":"question 'decision' needs 120015 tokens, exceeding the model limit of 512"}"#;
-        assert_eq!(
-            extract_detail(body),
-            "question 'decision' needs 120015 tokens, exceeding the model limit of 512"
-        );
+        assert_eq!(extract_detail(r#"{"detail":"too long"}"#), "too long");
     }
 
     #[test]
@@ -250,6 +250,7 @@ mod tests {
     #[test]
     fn detail_non_json_is_raw_body() {
         assert_eq!(extract_detail("Bad Gateway"), "Bad Gateway");
+        assert_eq!(extract_detail(r#""boom""#), "boom");
         assert_eq!(extract_detail(r#"{"other":1}"#), r#"{"other":1}"#);
     }
 
@@ -259,11 +260,11 @@ mod tests {
         assert_eq!(ApiError::Parse("x".into()).status(), 0);
         assert_eq!(
             ApiError::Http {
-                status: 422,
+                status: 400,
                 detail: String::new()
             }
             .status(),
-            422
+            400
         );
     }
 }
